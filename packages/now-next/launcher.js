@@ -1,6 +1,7 @@
 const { Server } = require('http');
 const next = require('next-server');
 const url = require('url');
+const express = require('express');
 const { Bridge } = require('./now__bridge.js');
 
 const bridge = new Bridge();
@@ -8,12 +9,39 @@ bridge.port = 3000;
 
 process.env.NODE_ENV = 'production';
 
-const app = next({});
+let app = next({});
 
-const server = new Server((req, res) => {
+let server = express();
+
+let config;
+try {
+  config = require('./launcher.config.js');
+} catch (__) {
+  // do nothing
+}
+
+try {
+  if (config && config.app) {
+    app = config.app(app);
+  }
+} catch (err) {
+  console.error('Error config app', err);
+}
+
+try {
+  if (config && config.server) {
+    server = config.server(server);
+  }
+} catch (err) {
+  console.error('Error config server', err);
+}
+
+server.use((req, res) => {
   const parsedUrl = url.parse(req.url, true);
   app.render(req, res, 'PATHNAME_PLACEHOLDER', parsedUrl.query, parsedUrl);
 });
-server.listen(bridge.port);
+
+const httpServer = new Server(server);
+httpServer.listen(bridge.port);
 
 exports.launcher = bridge.launcher;
