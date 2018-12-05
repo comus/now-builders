@@ -1,4 +1,5 @@
 const assert = require('assert');
+const bufferReplace = require('buffer-replace');
 const fetch = require('node-fetch');
 const fs = require('fs-extra');
 const glob = require('util').promisify(require('glob'));
@@ -19,6 +20,8 @@ async function packAndDeploy (builderPath) {
   return url;
 }
 
+const RANDOMNESS_PLACEHOLDER_STRING = 'RANDOMNESS_PLACEHOLDER';
+
 async function testDeployment ({ builderUrl, buildUtilsUrl }, fixturePath) {
   console.log('testDeployment', fixturePath);
   const globResult = await glob(`${fixturePath}/**`, { nodir: true });
@@ -28,37 +31,42 @@ async function testDeployment ({ builderUrl, buildUtilsUrl }, fixturePath) {
     return b;
   }, {});
 
-  const randomness = Math.floor(Math.random() * 0x7fffffff).toString(16);
+  const randomness = Math.floor(Math.random() * 0x7fffffff)
+    .toString(16)
+    .repeat(6)
+    .slice(0, RANDOMNESS_PLACEHOLDER_STRING.length);
+
   for (const file of Object.keys(bodies)) {
-    if (
-      [ '.js', '.json', '.php', '.sh', '.txt', '.md', '.mdx' ].includes(
-        path.extname(file)
-      )
-    ) {
-      bodies[file] = Buffer.from(
-        bodies[file].toString().replace(/RANDOMNESS_PLACEHOLDER/g, randomness)
-      );
-    }
+    bodies[file] = bufferReplace(
+      bodies[file],
+      RANDOMNESS_PLACEHOLDER_STRING,
+      randomness
+    );
   }
 
   const nowJson = JSON.parse(bodies['now.json']);
   for (const build of nowJson.builds) {
     if (builderUrl) {
-      build.use = `https://${builderUrl}`;
-      if (!buildUtilsUrl) {
-        build.config = build.config || {};
-        build.config.useBuildUtils = '@now/build-utils@canary';
+      if (builderUrl === '@canary') {
+        build.use = `${build.use}@canary`;
+      } else {
+        build.use = `https://${builderUrl}`;
       }
     }
     if (buildUtilsUrl) {
-      if (!builderUrl) build.use = `${build.use}@canary`;
       build.config = build.config || {};
-      build.config.useBuildUtils = `https://${buildUtilsUrl}`;
+      const { config } = build;
+      if (buildUtilsUrl === '@canary') {
+        config.useBuildUtils = config.useBuildUtils || '@now/build-utils';
+        config.useBuildUtils = `${config.useBuildUtils}@canary`;
+      } else {
+        config.useBuildUtils = `https://${buildUtilsUrl}`;
+      }
     }
   }
 
   bodies['now.json'] = Buffer.from(JSON.stringify(nowJson));
-  const deploymentUrl = await nowDeploy(bodies, randomness);
+  const { deploymentId, deploymentUrl } = await nowDeploy(bodies, randomness);
   console.log('deploymentUrl', deploymentUrl);
 
   for (const probe of nowJson.probes) {
@@ -82,6 +90,8 @@ async function testDeployment ({ builderUrl, buildUtilsUrl }, fixturePath) {
       assert(false, 'probe must have a test condition');
     }
   }
+
+  return { deploymentId, deploymentUrl };
 }
 
 async function nowDeployIndexTgz (file) {
@@ -90,7 +100,7 @@ async function nowDeployIndexTgz (file) {
     'now.json': Buffer.from(JSON.stringify({ version: 2 }))
   };
 
-  return await nowDeploy(bodies);
+  return (await nowDeploy(bodies)).deploymentUrl;
 }
 
 async function fetchDeploymentUrl (url, opts) {
