@@ -16,8 +16,8 @@ let server = express();
 let config;
 try {
   config = require('./launcher.config.js');
-} catch (__) {
-  // do nothing
+} catch (err) {
+  console.log('Error load launcher.config.js', err);
 }
 
 try {
