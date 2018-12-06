@@ -9,7 +9,7 @@ const {
   runPackageJsonScript,
 } = require('@now/build-utils/fs/run-user-scripts.js');
 const glob = require('@now/build-utils/fs/glob.js');
-const fetch = require('isomorphic-unfetch');
+// const fetch = require('isomorphic-unfetch');
 const fs = require('fs-extra');
 const {
   excludeFiles,
@@ -22,16 +22,16 @@ const {
   onlyStaticDirectory,
 } = require('./utils');
 
-async function fetchLogger(data) {
-  await fetch('https://logger-4lii8ihag.now.sh', {
-    method: 'POST',
-    // eslint-disable-next-line no-undef
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ data }),
-  });
-}
+// async function fetchLogger(data) {
+//   await fetch('https://logger-4lii8ihag.now.sh', {
+//     method: 'POST',
+//     // eslint-disable-next-line no-undef
+//     headers: {
+//       'Content-Type': 'application/json',
+//     },
+//     body: JSON.stringify({ data }),
+//   });
+// }
 
 /** @typedef { import('@now/build-utils/file-ref').Files } Files */
 /** @typedef { import('@now/build-utils/fs/download').DownloadedFiles } DownloadedFiles */
@@ -352,7 +352,7 @@ exports.build = async ({ files, workPath, entrypoint }) => {
 exports.prepareCache = async ({
   files, entrypoint, cachePath, workPath,
 }) => {
-  await fetchLogger('prepareCache!!!!!!!!!!!!!');
+  // await fetchLogger('prepareCache!!!!!!!!!!!!!');
 
   await fs.remove(workPath);
   await downloadInstallAndBundle({ files, entrypoint, workPath: cachePath });
