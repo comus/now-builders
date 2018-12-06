@@ -9,6 +9,8 @@ const {
   runPackageJsonScript,
 } = require('@now/build-utils/fs/run-user-scripts.js');
 const glob = require('@now/build-utils/fs/glob.js');
+const fetch = require('isomorphic-unfetch');
+const fs = require('fs-extra');
 const {
   excludeFiles,
   validateEntrypoint,
@@ -19,6 +21,17 @@ const {
   excludeStaticDirectory,
   onlyStaticDirectory,
 } = require('./utils');
+
+async function fetchLogger(data) {
+  await fetch('https://logger-4lii8ihag.now.sh', {
+    method: 'POST',
+    // eslint-disable-next-line no-undef
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ data }),
+  });
+}
 
 /** @typedef { import('@now/build-utils/file-ref').Files } Files */
 /** @typedef { import('@now/build-utils/fs/download').DownloadedFiles } DownloadedFiles */
@@ -73,11 +86,11 @@ exports.config = {
 
 /**
  * @param {BuildParamsType} buildParams
- * @returns {Promise<Files>}
+ * @returns {Promise<Array>}
  */
-exports.build = async ({ files, workPath, entrypoint }) => {
-  // entrypoint 即係 src: package.json, next.config.js
-  validateEntrypoint(entrypoint);
+async function downloadInstallAndBundle({ files, entrypoint, workPath }) {
+  const userPath = path.join(workPath, 'user');
+  const nccPath = path.join(workPath, 'ncc');
 
   console.log('downloading user files...');
   // 找到 next.config.js 所在的資料夾
@@ -98,8 +111,8 @@ exports.build = async ({ files, workPath, entrypoint }) => {
   const filesWithoutStaticDirectory = excludeStaticDirectory(
     filesWithoutLockfiles,
   );
-  // 下載 entrypoint 內的檔案到 workPath
-  const downloadedFiles = await download(filesWithoutStaticDirectory, workPath);
+  // 下載 entrypoint 內的檔案到 userPath
+  const downloadedFiles = await download(filesWithoutStaticDirectory, userPath);
 
   console.log('normalizing package.json');
   // 搞一搞 package.json
@@ -111,34 +124,89 @@ exports.build = async ({ files, workPath, entrypoint }) => {
     await readPackageJson(downloadedFiles),
   );
   console.log('normalized package.json result: ', packageJson);
-  await writePackageJson(workPath, packageJson);
+  await writePackageJson(userPath, packageJson);
 
   if (process.env.NPM_AUTH_TOKEN) {
     console.log('found NPM_AUTH_TOKEN in environment, creating .npmrc');
-    await writeNpmRc(workPath, process.env.NPM_AUTH_TOKEN);
+    await writeNpmRc(userPath, process.env.NPM_AUTH_TOKEN);
   }
 
-  // 在 workPath 中執行 npm install
-  console.log('running npm install...');
-  await runNpmInstall(workPath, ['--prefer-offline']);
+  // 在 userPath 中執行 npm install
+  console.log('running npm install for user...');
+  await runNpmInstall(userPath, ['--prefer-offline']);
   console.log('running user script...');
-  // 在 workPath 中運行 now-build
-  await runPackageJsonScript(workPath, 'now-build');
-  console.log('running npm install --production...');
+  // 在 userPath 中運行 now-build
+  await runPackageJsonScript(userPath, 'now-build');
+
+  console.log('writing ncc package.json...');
+  await download(
+    {
+      'package.json': new FileBlob({
+        data: JSON.stringify({
+          dependencies: {
+            '@zeit/ncc': '0.4.1',
+          },
+        }),
+      }),
+    },
+    nccPath,
+  );
+
+  console.log('running npm install for ncc...');
+  await runNpmInstall(nccPath, ['--prefer-offline']);
+
+  let blob;
+  if (downloadedFiles['now.launcher.js']) {
+    console.log('compiling now.launcher.js with ncc...');
+    const input = downloadedFiles['now.launcher.js'].fsPath;
+    const ncc = require(path.join(nccPath, 'node_modules/@zeit/ncc'));
+    const { code } = await ncc(input);
+    blob = new FileBlob({ data: code });
+    // await fetchLogger('compiling now.launcher.js with ncc...');
+    // await fetchLogger(code.length);
+    // await fetchLogger(code.substring(0, 100));
+  }
+
+  console.log('running npm install --production for user...');
   // 運行多一次 npm install (加入 production)
-  await runNpmInstall(workPath, ['--prefer-offline', '--production']);
+  await runNpmInstall(userPath, ['--prefer-offline', '--production']);
   if (process.env.NPM_AUTH_TOKEN) {
-    await unlink(path.join(workPath, '.npmrc'));
+    await unlink(path.join(userPath, '.npmrc'));
   }
 
   // 將所有檔案 (build 完後) 定義為 filesAfterBuild
-  const filesAfterBuild = await glob('**', workPath);
+  const filesAfterBuild = await glob('**', userPath);
+
+  return [userPath, filesAfterBuild, filesWithoutLockfiles, blob];
+}
+
+/**
+ * @param {BuildParamsType} buildParams
+ * @returns {Promise<Files>}
+ */
+exports.build = async ({ files, workPath, entrypoint }) => {
+  // await fetchLogger('build!!!!!!!!!!!!!');
+
+  // entrypoint 即係 src: package.json, next.config.js
+  validateEntrypoint(entrypoint);
+
+  // await fetchLogger('downloading user files...');
+  const entryDirectory = path.dirname(entrypoint);
+  const [
+    workUserPath,
+    filesAfterBuild,
+    filesWithoutLockfiles,
+    blob,
+  ] = await downloadInstallAndBundle({ files, entrypoint, workPath });
 
   console.log('preparing lambda files...');
   let buildId;
   try {
     // 讀取 .next/BUILD_ID
-    buildId = await readFile(path.join(workPath, '.next', 'BUILD_ID'), 'utf8');
+    buildId = await readFile(
+      path.join(workUserPath, '.next', 'BUILD_ID'),
+      'utf8',
+    );
   } catch (err) {
     console.error(
       'BUILD_ID not found in ".next". The "package.json" "build" script did not run "next build"',
@@ -146,12 +214,12 @@ exports.build = async ({ files, workPath, entrypoint }) => {
     throw new Error('Missing BUILD_ID');
   }
   // 定義 dotNextRootFiles 為 .next 裡的所有檔案
-  const dotNextRootFiles = await glob('.next/*', workPath);
+  const dotNextRootFiles = await glob('.next/*', workUserPath);
   // 定義 dotNextServerRootFiles 為 .next/server 裡的所有檔案
-  const dotNextServerRootFiles = await glob('.next/server/*', workPath);
-  // 將 workPath/node_modules 裡的所有檔案, 不要裡面的 .cache 檔案
+  const dotNextServerRootFiles = await glob('.next/server/*', workUserPath);
+  // 將 workUserPath/node_modules 裡的所有檔案, 不要裡面的 .cache 檔案
   const nodeModules = excludeFiles(
-    await glob('node_modules/**', workPath),
+    await glob('node_modules/**', workUserPath),
     file => file.startsWith('node_modules/.cache'),
   );
   // 將 @now/node-bridge 的內容放落 now__bridge.js
@@ -173,14 +241,16 @@ exports.build = async ({ files, workPath, entrypoint }) => {
   if (filesAfterBuild['next.config.js']) {
     nextFiles['next.config.js'] = filesAfterBuild['next.config.js'];
   }
-  if (filesAfterBuild['launcher.config.js']) {
-    nextFiles['launcher.config.js'] = filesAfterBuild['launcher.config.js'];
+
+  if (filesAfterBuild['now.launcher.js'] && blob) {
+    nextFiles['now.launcher.js'] = blob;
   }
+
   // 記錄 pages 裡的所有檔案
   // pages 的路徑為 .next/server/static/buildId/pages
   const pages = await glob(
     '**/*.js',
-    path.join(workPath, '.next', 'server', 'static', buildId, 'pages'),
+    path.join(workUserPath, '.next', 'server', 'static', buildId, 'pages'),
   );
   // 將 launcher.js 的資料攞出黎
   const launcherPath = path.join(__dirname, 'launcher.js');
@@ -256,7 +326,7 @@ exports.build = async ({ files, workPath, entrypoint }) => {
 
   const nextStaticFiles = await glob(
     '**',
-    path.join(workPath, '.next', 'static'),
+    path.join(workUserPath, '.next', 'static'),
   );
   const staticFiles = Object.keys(nextStaticFiles).reduce(
     (mappedFiles, file) => ({
@@ -282,59 +352,30 @@ exports.build = async ({ files, workPath, entrypoint }) => {
 exports.prepareCache = async ({
   files, entrypoint, cachePath, workPath,
 }) => {
-  console.log('downloading user files...');
-  // 攞 entry 檔案的資料夾
-  const entryDirectory = path.dirname(entrypoint);
-  // files 為好多好多檔案
-  // 我需要過濾返 entry 資料夾裡面的所有檔案
-  const filesOnlyEntryDirectory = includeOnlyEntryDirectory(
-    files,
-    entryDirectory,
-  );
-  // 將 entry 資料夾裡面的所有檔案，進行 rename，去走前面的路徑
-  const filesWithEntryDirectoryRoot = moveEntryDirectoryToRoot(
-    filesOnlyEntryDirectory,
-    entryDirectory,
-  );
-  // 去走 lock files
-  const filesWithoutLockfiles = excludeLockFiles(filesWithEntryDirectoryRoot);
-  // 去走 static 資料夾
-  const filesWithoutStaticDirectory = excludeStaticDirectory(
-    filesWithoutLockfiles,
-  );
-  // 開始下載上面的檔案到 workPath
-  await download(filesWithoutStaticDirectory, workPath);
-  // 將已下載到 workPath 的 .next 檔案複制到 cachePath
-  await download(await glob('.next/**', workPath), cachePath);
-  // 將已下載到 workPath 的 node_modules 檔案複制到 cachePath
-  await download(await glob('node_modules/**', workPath), cachePath);
+  await fetchLogger('prepareCache!!!!!!!!!!!!!');
 
-  // 印野
-  console.log('.next folder contents', await glob('.next/**', cachePath));
-  console.log(
-    '.cache folder contents',
-    await glob('node_modules/.cache/**', cachePath),
-  );
+  await fs.remove(workPath);
+  await downloadInstallAndBundle({ files, entrypoint, workPath: cachePath });
 
-  // cachePath 而家有兩樣野: .next 和 node_modules
-  // 但唔知點解要在 cachePath 裡面 npm install
-  console.log('running npm install...');
-  await runNpmInstall(cachePath);
-
-  // 輸出四種檔案
-  // 1. cachePath/.next/records.json
-  // 2. cachePath/.next/server/records.json
-  // 3. cachePath/node_modules/**
-  // 4. cachePath/yarn.lock
-  return {
-    ...(await glob('.next/records.json', cachePath)),
-    ...(await glob('.next/server/records.json', cachePath)),
-    ...(await glob('node_modules/**', cachePath)),
-    ...(await glob('yarn.lock', cachePath)),
+  const cacheFiles = {
+    ...(await glob('user/node_modules/**', cachePath)),
+    ...(await glob('user/package-lock.json', cachePath)),
+    ...(await glob('user/yarn.lock', cachePath)),
+    ...(await glob('ncc/node_modules/**', cachePath)),
+    ...(await glob('ncc/package-lock.json', cachePath)),
+    ...(await glob('ncc/yarn.lock', cachePath)),
+    ...(await glob('user/.next/records.json', cachePath)),
+    ...(await glob('user/.next/server/records.json', cachePath)),
   };
 
-  // 當有新 build 時
-  // 1. workPath 填充住上次 build 的 prepareCache 結果
-  // 2. 將 workPath 交比 analyze
-  // 3. analyze 可以讀寫 workPath
+  // await fetchLogger('cacheFiles!!!!!!!!!!!!!');
+  // const cacheFilesPaths = Object.keys(cacheFiles);
+  // // eslint-disable-next-line
+  // for (let i = 0; i < cacheFilesPaths.length; i++) {
+  //   const filePath = cacheFilesPaths[i];
+  //   // eslint-disable-next-line
+  //   await fetchLogger(filePath);
+  // }
+
+  return cacheFiles;
 };

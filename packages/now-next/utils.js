@@ -151,7 +151,6 @@ function normalizePackageJson(defaultPackageJson = {}) {
       // react and react-dom can be overwritten
       react: 'latest',
       'react-dom': 'latest',
-      express: 'latest',
       ...dependencies, // override react if user provided it
       // next-server is forced to canary
       'next-server': 'canary',
