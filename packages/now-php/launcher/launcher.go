@@ -5,6 +5,7 @@ import (
 	"bytes"
 	php "github.com/deuill/go-php"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,23 +21,71 @@ func (h *PhpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	engine, _ := php.New()
 	context, _ := engine.NewContext()
 
-	var query = r.URL.Query()
-	getMap := make(map[string]string)
-	for k, v := range query {
-		for _, s := range v {
-			getMap[k] = s
+	for k, v := range r.URL.Query() {
+		if strings.HasSuffix(k, "[]") {
+			sb := ""
+			for _, s := range v {
+				if sb != "" {
+					sb += ","
+				}
+				sb += "'" + s + "'"
+			}
+			k = strings.TrimSuffix(k, "[]")
+			context.Eval("$_GET['" + k + "']=Array(" + sb + ");")
+			context.Eval("$_REQUEST['" + k + "']=Array(" + sb + ");")
+		} else {
+			s := v[len(v) - 1]
+			context.Eval("$_GET['" + k + "']='" + s + "';") // TODO escape quotes
+			context.Eval("$_REQUEST['" + k + "']='" + s + "';") // TODO escape quotes
 		}
 	}
-	context.Bind("_GET", getMap)
 
 	r.ParseForm()
-	postMap := make(map[string]string)
 	for k, v := range r.PostForm {
-		for _, s := range v {
-			postMap[k] = s
+		if strings.HasSuffix(k, "[]") {
+			sb := ""
+			for _, s := range v {
+				if sb != "" {
+					sb += ","
+				}
+				sb += "'" + s + "'"
+			}
+			k = strings.TrimSuffix(k, "[]")
+			context.Eval("$_POST['" + k + "']=Array(" + sb + ");")
+			context.Eval("$_REQUEST['" + k + "']=Array(" + sb + ");")
+		} else {
+			s := v[len(v) - 1]
+			context.Eval("$_POST['" + k + "']='" + s + "';") // TODO escape quotes
+			context.Eval("$_REQUEST['" + k + "']='" + s + "';") // TODO escape quotes
 		}
 	}
-	context.Bind("_POST", postMap)
+
+	cookies := r.Cookies()
+	cookieMap := make(map[string]string)
+	for _, c := range cookies {
+		k, _ := url.QueryUnescape(c.Name)
+		v, _ := url.QueryUnescape(c.Value)
+		s := "'" + v + "'" // TODO escape quotes
+		if strings.HasSuffix(k, "[]") {
+			if value, exists := cookieMap[k]; exists {
+				cookieMap[k] = value + "," + s
+			} else {
+				cookieMap[k] = s
+			}
+		} else {
+			if _, exists := cookieMap[k]; !exists {
+				cookieMap[k] = s
+			}
+		}
+	}
+	for k, v := range cookieMap {
+		if strings.HasSuffix(k, "[]") {
+			k = strings.TrimSuffix(k, "[]")
+			context.Eval("$_COOKIE['" + k + "']=Array(" + v + ");")
+		} else {
+			context.Eval("$_COOKIE['" + k + "']=" + v + ";")
+		}
+	}
 
 	envMap := make(map[string]string)
 	for _, e := range os.Environ() {
@@ -45,9 +94,14 @@ func (h *PhpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	context.Bind("_ENV", envMap)
 
-	context.Eval("$_SERVER[\"SERVER_NAME\"]=\"" + r.Host + "\";")
-	context.Eval("$_SERVER[\"SERVER_PORT\"]=\"443\";")
-	context.Eval("$_SERVER[\"HTTPS\"]=\"on\";")
+	context.Eval("$_SERVER['SCRIPT_FILENAME']='" + h.ScriptFull + "';")
+	context.Eval("$_SERVER['REQUEST_METHOD']='" + r.Method + "';")
+	context.Eval("$_SERVER['REQUEST_URI']='" + r.URL.RequestURI() + "';") // TODO must be unescaped to align with php
+	context.Eval("$_SERVER['HTTP_HOST']='" + r.Host + "';") // no port needed
+	context.Eval("$_SERVER['SERVER_PROTOCOL']='" + r.Proto + "';");
+	context.Eval("$_SERVER['SERVER_NAME']='" + r.Host + "';")
+	context.Eval("$_SERVER['SERVER_PORT']='443';")
+	context.Eval("$_SERVER['HTTPS']='on';")
 	context.Eval("http_response_code(200);")
 
 	var stdout bytes.Buffer
