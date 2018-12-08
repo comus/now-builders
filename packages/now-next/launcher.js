@@ -25,7 +25,8 @@ try {
 }
 
 if (customLauncher) {
-  customLauncher({
+  const launcher = customLauncher.launcher || customLauncher;
+  launcher({
     port: bridge.port,
     app,
     pathname,
