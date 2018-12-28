@@ -30,10 +30,7 @@ async function nowDeploy (bodies, randomness) {
   console.log(`posting ${files.length} files`);
 
   for (const { file: filename } of files) {
-    await filePost(
-      bodies[filename],
-      digestOfFile(bodies[filename])
-    );
+    await filePost(bodies[filename], digestOfFile(bodies[filename]));
   }
 
   let deploymentId;
@@ -138,6 +135,12 @@ async function fetchApi (url, opts = {}) {
   if (process.env.VERBOSE) {
     console.log('fetch', method, url);
     if (body) console.log(encodeURIComponent(body).slice(0, 80));
+  }
+
+  if (!opts.headers) opts.headers = {};
+
+  if (!opts.headers.Accept) {
+    opts.headers.Accept = 'application/json';
   }
 
   return await fetch(urlWithHost, opts);

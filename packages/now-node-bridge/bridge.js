@@ -1,7 +1,10 @@
 const http = require('http');
 
 function normalizeEvent(event) {
+  let isApiGateway = true;
+
   if (event.Action === 'Invoke') {
+    isApiGateway = false;
     const invokeEvent = JSON.parse(event.body);
 
     const {
@@ -21,6 +24,7 @@ function normalizeEvent(event) {
     }
 
     return {
+      isApiGateway,
       method,
       path,
       headers,
@@ -33,6 +37,7 @@ function normalizeEvent(event) {
   } = event;
 
   return {
+    isApiGateway,
     method,
     path,
     headers,
@@ -58,8 +63,10 @@ class Bridge {
       }
 
       const {
-        method, path, headers, body,
-      } = normalizeEvent(event);
+        isApiGateway, method, path, headers, body,
+      } = normalizeEvent(
+        event,
+      );
 
       const opts = {
         hostname: '127.0.0.1',
@@ -73,20 +80,27 @@ class Bridge {
         const response = res;
         const respBodyChunks = [];
         response.on('data', chunk => respBodyChunks.push(Buffer.from(chunk)));
-        response.on('error', error => reject(error));
+        response.on('error', reject);
         response.on('end', () => {
+          const bodyBuffer = Buffer.concat(respBodyChunks);
           delete response.headers.connection;
-          delete response.headers['content-length'];
+
+          if (isApiGateway) {
+            delete response.headers['content-length'];
+          } else if (response.headers['content-length']) {
+            response.headers['content-length'] = bodyBuffer.length;
+          }
 
           resolve({
             statusCode: response.statusCode,
             headers: response.headers,
-            body: Buffer.concat(respBodyChunks).toString('base64'),
+            body: bodyBuffer.toString('base64'),
             encoding: 'base64',
           });
         });
       });
 
+      req.on('error', reject);
       if (body) req.write(body);
       req.end();
     });
