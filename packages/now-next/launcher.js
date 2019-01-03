@@ -18,10 +18,10 @@ if (customLauncher) {
   const launcher = customLauncher.launcher || customLauncher;
   launcher({
     port: bridge.port,
-    handle: page.default,
+    handle: page.render,
   });
 } else {
-  const server = new Server(page.default);
+  const server = new Server(page.render);
   server.listen(bridge.port);
 }
 
