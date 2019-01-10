@@ -72,7 +72,7 @@ async function compile(workNccPath, downloadedFiles, entrypoint) {
   // ncc 的檔案路徑
   const ncc = require(path.join(workNccPath, 'node_modules/@zeit/ncc'));
   // 交比 ncc compile，得出 code 和 assets
-  const { code /* , assets */ } = await ncc(input);
+  const { code, assets } = await ncc(input);
 
   // 定義準備檔案
   const preparedFiles = {};
@@ -83,12 +83,12 @@ async function compile(workNccPath, downloadedFiles, entrypoint) {
   preparedFiles[path.join('user', entrypoint)] = blob;
   // 將每個 assets 交返比 preparedFiles
   // eslint-disable-next-line no-restricted-syntax
-  // for (const assetName of Object.keys(assets)) {
-  //   const blob2 = new FileBlob({ data: assets[assetName] });
-  //   preparedFiles[
-  //     path.join('user', path.dirname(entrypoint), assetName)
-  //   ] = blob2;
-  // }
+  for (const assetName of Object.keys(assets)) {
+    const blob2 = new FileBlob({ data: assets[assetName] });
+    preparedFiles[
+      path.join('user', path.dirname(entrypoint), assetName)
+    ] = blob2;
+  }
 
   // 輸出準備好的檔案
   return preparedFiles;
