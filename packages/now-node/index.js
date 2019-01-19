@@ -17,6 +17,7 @@ const {
  * @typedef {Object} BuildParamsType
  * @property {Files} files - Files object
  * @property {string} entrypoint - Entrypoint specified for the builder
+ * @property {Object} config - User-passed config from now.json
  * @property {string} workPath - Working directory for this build
  */
 
@@ -36,7 +37,7 @@ async function downloadInstallAndBundle(
 
   console.log('downloading user files...');
   // 下載檔案到 workPath/user
-  const downloadedFiles = await download(files, userPath);
+  await download(files, userPath);
 
   console.log('running npm install for user...');
   // 定義 entrypoint 的「資料夾」路徑 workpath/user/.../
@@ -62,13 +63,24 @@ async function downloadInstallAndBundle(
   console.log('running npm install for ncc...');
   // 在 ncc 的「資料夾」路徑中執行 npm install
   await runNpmInstall(nccPath, npmArguments);
-  return [downloadedFiles, nccPath, entrypointFsDirname];
+  return [nccPath, entrypointFsDirname];
 }
 
 // 將 entrypoint 的檔案交比 ncc compile 得出 compiled 過的檔案
-async function compile(workNccPath, downloadedFiles, entrypoint) {
+async function compile(workNccPath, filesAfterBuild, entrypoint, config) {
   // input 為 entrypoint 的檔案路徑
-  const input = downloadedFiles[entrypoint].fsPath;
+  let input = filesAfterBuild[entrypoint].fsPath;
+
+  const srcDir = (config && config.srcDir) || 'src';
+  const distDir = (config && config.distDir) || 'dist';
+  const distFile = filesAfterBuild[
+    entrypoint.replace(new RegExp(`^${srcDir}/`), `${distDir}/`)
+  ];
+
+  if (entrypoint.startsWith(`${srcDir}/`) && distFile) {
+    input = distFile.fsPath;
+  }
+
   // ncc 的檔案路徑
   const ncc = require(path.join(workNccPath, 'node_modules/@zeit/ncc'));
   // 交比 ncc compile，得出 code 和 assets
@@ -102,14 +114,12 @@ exports.config = {
  * @param {BuildParamsType} buildParams
  * @returns {Promise<Files>}
  */
-exports.build = async ({ files, entrypoint, workPath }) => {
+exports.build = async ({
+  files, entrypoint, workPath, config,
+}) => {
   // 下載程式到 workPath/user，到 entrypoint 所在目錄 npm install
   // 下載 package.json 到 workPath/ncc，到 ncc 所在目錄 npm install
-  const [
-    downloadedFiles,
-    workNccPath,
-    entrypointFsDirname,
-  ] = await downloadInstallAndBundle(
+  const [workNccPath, entrypointFsDirname] = await downloadInstallAndBundle(
     { files, entrypoint, workPath },
     { npmArguments: ['--prefer-offline'] },
   );
@@ -118,9 +128,17 @@ exports.build = async ({ files, entrypoint, workPath }) => {
   // 在 entrypoint 所有資料夾中運行 package.json 中的 now-build script
   await runPackageJsonScript(entrypointFsDirname, 'now-build');
 
+  const userPath = path.join(workPath, 'user');
+  const filesAfterBuild = await glob('**', userPath);
+
   console.log('compiling entrypoint with ncc...');
   // 將 entrypoint 的檔案交比 ncc compile 得出 compiled 過的檔案
-  const preparedFiles = await compile(workNccPath, downloadedFiles, entrypoint);
+  const preparedFiles = await compile(
+    workNccPath,
+    filesAfterBuild,
+    entrypoint,
+    config,
+  );
   // 定義 launcher 路徑
   const launcherPath = path.join(__dirname, 'launcher.js');
   // 讀取 launcher.js 的內容
