@@ -39,8 +39,7 @@ async function downloadInstallAndBundle(
   // 下載檔案到 workPath/user
   await download(files, userPath);
 
-  console.log('running npm install for user...');
-  // 定義 entrypoint 的「資料夾」路徑 workpath/user/.../
+  console.log("installing dependencies for user's code...");
   const entrypointFsDirname = path.join(userPath, path.dirname(entrypoint));
   // 在 entrypoint 的「資料夾」路徑中執行 npm install
   await runNpmInstall(entrypointFsDirname, npmArguments);
@@ -52,7 +51,7 @@ async function downloadInstallAndBundle(
       'package.json': new FileBlob({
         data: JSON.stringify({
           dependencies: {
-            '@zeit/ncc': '0.6.0',
+            '@zeit/ncc': '0.9.0',
           },
         }),
       }),
@@ -60,8 +59,7 @@ async function downloadInstallAndBundle(
     nccPath,
   );
 
-  console.log('running npm install for ncc...');
-  // 在 ncc 的「資料夾」路徑中執行 npm install
+  console.log('installing dependencies for ncc...');
   await runNpmInstall(nccPath, npmArguments);
   return [nccPath, entrypointFsDirname];
 }
@@ -96,7 +94,8 @@ async function compile(workNccPath, filesAfterBuild, entrypoint, config) {
   // 將每個 assets 交返比 preparedFiles
   // eslint-disable-next-line no-restricted-syntax
   for (const assetName of Object.keys(assets)) {
-    const blob2 = new FileBlob({ data: assets[assetName] });
+    const { source: data, permissions: mode } = assets[assetName];
+    const blob2 = new FileBlob({ data, mode });
     preparedFiles[
       path.join('user', path.dirname(entrypoint), assetName)
     ] = blob2;

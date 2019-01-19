@@ -173,7 +173,7 @@ exports.build = async ({ files, workPath, entrypoint }) => {
     await writeNpmRc(userPath, process.env.NPM_AUTH_TOKEN);
   }
 
-  console.log('running npm install for user...');
+  console.log('installing dependencies...');
   await runNpmInstall(userPath, ['--prefer-offline']);
   console.log('running user script...');
   await runPackageJsonScript(userPath, 'now-build');
@@ -184,7 +184,7 @@ exports.build = async ({ files, workPath, entrypoint }) => {
       'package.json': new FileBlob({
         data: JSON.stringify({
           dependencies: {
-            '@zeit/ncc': '0.6.0',
+            '@zeit/ncc': '0.9.0',
           },
         }),
       }),

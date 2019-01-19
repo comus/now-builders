@@ -54,7 +54,7 @@ async function scanParentDirs(destPath, scriptName) {
   return { hasScript, hasPackageLockJson };
 }
 
-async function runNpmInstall(destPath, args = []) {
+async function installDependencies(destPath, args = []) {
   assert(path.isAbsolute(destPath));
 
   let commandArgs = args;
@@ -101,6 +101,7 @@ async function runPackageJsonScript(destPath, scriptName) {
 
 module.exports = {
   runShellScript,
-  runNpmInstall,
+  installDependencies,
+  runNpmInstall: installDependencies,
   runPackageJsonScript,
 };
