@@ -1,6 +1,6 @@
-const FileBlob = require('@now/build-utils/file-blob.js');
-const FileFsRef = require('@now/build-utils/file-fs-ref.js');
-const glob = require('@now/build-utils/fs/glob.js');
+const FileBlob = require('@now/build-utils/file-blob.js'); // eslint-disable-line import/no-extraneous-dependencies
+const FileFsRef = require('@now/build-utils/file-fs-ref.js'); // eslint-disable-line import/no-extraneous-dependencies
+const glob = require('@now/build-utils/fs/glob.js'); // eslint-disable-line import/no-extraneous-dependencies
 const path = require('path');
 
 async function getFiles() {

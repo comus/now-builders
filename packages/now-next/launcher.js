@@ -4,9 +4,6 @@ const { Server } = require('http');
 const { Bridge } = require('./now__bridge.js');
 const page = require('./page.js');
 
-const bridge = new Bridge();
-bridge.port = 3000;
-
 let customLauncher;
 try {
   customLauncher = require('./now.launcher.js');
@@ -14,15 +11,17 @@ try {
   console.log('Error load custom launcher', err);
 }
 
+let handle = page.render;
+
 if (customLauncher) {
   const launcher = customLauncher.launcher || customLauncher;
-  launcher({
-    port: bridge.port,
-    handle: page.render,
+  handle = launcher({
+    handle,
   });
-} else {
-  const server = new Server(page.render);
-  server.listen(bridge.port);
 }
+
+const server = new Server(handle);
+const bridge = new Bridge(server);
+bridge.listen();
 
 exports.launcher = bridge.launcher;

@@ -1,11 +1,11 @@
 const assert = require('assert');
-const { createLambda } = require('@now/build-utils/lambda.js');
+const { createLambda } = require('@now/build-utils/lambda.js'); // eslint-disable-line import/no-extraneous-dependencies
 const fetch = require('node-fetch');
-const FileBlob = require('@now/build-utils/file-blob.js');
+const FileBlob = require('@now/build-utils/file-blob.js'); // eslint-disable-line import/no-extraneous-dependencies
 const { getFiles } = require('@now/php-bridge');
 const path = require('path');
-const rename = require('@now/build-utils/fs/rename.js');
-const streamToBuffer = require('@now/build-utils/fs/stream-to-buffer.js');
+const rename = require('@now/build-utils/fs/rename.js'); // eslint-disable-line import/no-extraneous-dependencies
+const streamToBuffer = require('@now/build-utils/fs/stream-to-buffer.js'); // eslint-disable-line import/no-extraneous-dependencies
 const yauzl = require('yauzl');
 
 exports.config = {

@@ -1,24 +1,31 @@
-const { createLambda } = require('@now/build-utils/lambda.js');
-const download = require('@now/build-utils/fs/download.js');
-const FileFsRef = require('@now/build-utils/file-fs-ref.js');
-const FileBlob = require('@now/build-utils/file-blob');
+const { createLambda } = require('@now/build-utils/lambda.js'); // eslint-disable-line import/no-extraneous-dependencies
+const download = require('@now/build-utils/fs/download.js'); // eslint-disable-line import/no-extraneous-dependencies
+const FileFsRef = require('@now/build-utils/file-fs-ref.js'); // eslint-disable-line import/no-extraneous-dependencies
+const FileBlob = require('@now/build-utils/file-blob'); // eslint-disable-line import/no-extraneous-dependencies
 const path = require('path');
-const { readFile, writeFile, unlink } = require('fs.promised');
 const {
   runNpmInstall,
   runPackageJsonScript,
-} = require('@now/build-utils/fs/run-user-scripts.js');
-const glob = require('@now/build-utils/fs/glob.js');
+} = require('@now/build-utils/fs/run-user-scripts.js'); // eslint-disable-line import/no-extraneous-dependencies
+const glob = require('@now/build-utils/fs/glob.js'); // eslint-disable-line import/no-extraneous-dependencies
+const {
+  readFile,
+  writeFile,
+  unlink: unlinkFile,
+  remove: removePath,
+  mkdirp,
+  rename: renamePath,
+  pathExists,
+} = require('fs-extra');
 const semver = require('semver');
 const nextLegacyVersions = require('./legacy-versions');
 const {
   excludeFiles,
   validateEntrypoint,
   includeOnlyEntryDirectory,
-  moveEntryDirectoryToRoot,
   normalizePackageJson,
-  excludeStaticDirectory,
   onlyStaticDirectory,
+  getNextConfig,
 } = require('./utils');
 
 /** @typedef { import('@now/build-utils/file-ref').Files } Files */
@@ -33,15 +40,17 @@ const {
 
 /**
  * Read package.json from files
- * @param {DownloadedFiles} files
+ * @param {string} entryPath
  */
-async function readPackageJson(files) {
-  if (!files['package.json']) {
+async function readPackageJson(entryPath) {
+  const packagePath = path.join(entryPath, 'package.json');
+
+  try {
+    return JSON.parse(await readFile(packagePath, 'utf8'));
+  } catch (err) {
+    console.log('package.json not found in entry');
     return {};
   }
-
-  const packageJsonPath = files['package.json'].fsPath;
-  return JSON.parse(await readFile(packageJsonPath, 'utf8'));
 }
 
 /**
@@ -68,6 +77,36 @@ async function writeNpmRc(workPath, token) {
   );
 }
 
+function getNextVersion(packageJson) {
+  let nextVersion;
+  if (packageJson.dependencies && packageJson.dependencies.next) {
+    nextVersion = packageJson.dependencies.next;
+  } else if (packageJson.devDependencies && packageJson.devDependencies.next) {
+    nextVersion = packageJson.devDependencies.next;
+  }
+  return nextVersion;
+}
+
+function isLegacyNext(nextVersion) {
+  // If version is using the dist-tag instead of a version range
+  if (nextVersion === 'canary' || nextVersion === 'latest') {
+    return false;
+  }
+
+  // If the version is an exact match with the legacy versions
+  if (nextLegacyVersions.indexOf(nextVersion) !== -1) {
+    return true;
+  }
+
+  const maxSatisfying = semver.maxSatisfying(nextLegacyVersions, nextVersion);
+  // When the version can't be matched with legacy versions, so it must be a newer version
+  if (maxSatisfying === null) {
+    return false;
+  }
+
+  return true;
+}
+
 exports.config = {
   maxLambdaSize: '5mb',
 };
@@ -81,81 +120,51 @@ exports.build = async ({ files, workPath, entrypoint }) => {
 
   console.log('downloading user files...');
   const entryDirectory = path.dirname(entrypoint);
-
   const userPath = path.join(workPath, 'user');
   const nccPath = path.join(workPath, 'ncc');
+  const downloadedFiles = await download(files, userPath);
+  const entryPath = path.join(userPath, entryDirectory);
 
-  const filesOnlyEntryDirectory = includeOnlyEntryDirectory(
-    files,
-    entryDirectory,
-  );
-  const filesWithEntryDirectoryRoot = moveEntryDirectoryToRoot(
-    filesOnlyEntryDirectory,
-    entryDirectory,
-  );
-  const filesWithoutStaticDirectory = excludeStaticDirectory(
-    filesWithEntryDirectoryRoot,
-  );
-  const downloadedFiles = await download(filesWithoutStaticDirectory, userPath);
-
-  const pkg = await readPackageJson(downloadedFiles);
-
-  let nextVersion;
-  if (pkg.dependencies && pkg.dependencies.next) {
-    nextVersion = pkg.dependencies.next;
-  } else if (pkg.devDependencies && pkg.devDependencies.next) {
-    nextVersion = pkg.devDependencies.next;
+  if (await pathExists(path.join(entryPath, '.next'))) {
+    console.warn(
+      'WARNING: You should probably not upload the `.next` directory. See https://zeit.co/docs/v2/deployments/official-builders/next-js-now-next/ for more information.',
+    );
   }
 
+  const pkg = await readPackageJson(entryPath);
+
+  const nextVersion = getNextVersion(pkg);
   if (!nextVersion) {
     throw new Error(
       'No Next.js version could be detected in "package.json". Make sure `"next"` is installed in "dependencies" or "devDependencies"',
     );
   }
 
-  const isLegacy = (() => {
-    // If version is using the dist-tag instead of a version range
-    if (nextVersion === 'canary' || nextVersion === 'latest') {
-      return false;
-    }
-
-    // If the version is an exact match with the legacy versions
-    if (nextLegacyVersions.indexOf(nextVersion) !== -1) {
-      return true;
-    }
-
-    const maxSatisfying = semver.maxSatisfying(nextLegacyVersions, nextVersion);
-
-    // When the version can't be matched with legacy versions, so it must be a newer version
-    if (maxSatisfying === null) {
-      return false;
-    }
-
-    return true;
-  })();
+  const isLegacy = isLegacyNext(nextVersion);
 
   console.log(`MODE: ${isLegacy ? 'legacy' : 'serverless'}`);
 
   if (isLegacy) {
     try {
-      await unlink(path.join(userPath, 'yarn.lock'));
+      await unlinkFile(path.join(entryPath, 'yarn.lock'));
     } catch (err) {
       console.log('no yarn.lock removed');
     }
 
     try {
-      await unlink(path.join(userPath, 'package-lock.json'));
+      await unlinkFile(path.join(entryPath, 'package-lock.json'));
     } catch (err) {
       console.log('no package-lock.json removed');
     }
 
     console.warn(
-      "WARNING: your application is being deployed in @now/next's legacy mode.",
+      "WARNING: your application is being deployed in @now/next's legacy mode. http://err.sh/zeit/now-builders/now-next-legacy-mode",
     );
+
     console.log('normalizing package.json');
     const packageJson = normalizePackageJson(pkg);
     console.log('normalized package.json result: ', packageJson);
-    await writePackageJson(userPath, packageJson);
+    await writePackageJson(entryPath, packageJson);
   } else if (!pkg.scripts || !pkg.scripts['now-build']) {
     console.warn(
       'WARNING: "now-build" script not found. Adding \'"now-build": "next build"\' to "package.json" automatically',
@@ -165,33 +174,34 @@ exports.build = async ({ files, workPath, entrypoint }) => {
       ...(pkg.scripts || {}),
     };
     console.log('normalized package.json result: ', pkg);
-    await writePackageJson(userPath, pkg);
+    await writePackageJson(entryPath, pkg);
   }
 
   if (process.env.NPM_AUTH_TOKEN) {
     console.log('found NPM_AUTH_TOKEN in environment, creating .npmrc');
-    await writeNpmRc(userPath, process.env.NPM_AUTH_TOKEN);
+    await writeNpmRc(entryPath, process.env.NPM_AUTH_TOKEN);
   }
 
   console.log('installing dependencies...');
-  await runNpmInstall(userPath, ['--prefer-offline']);
+  await runNpmInstall(entryPath, ['--prefer-offline']);
   console.log('running user script...');
-  await runPackageJsonScript(userPath, 'now-build');
+  await runPackageJsonScript(entryPath, 'now-build');
 
   console.log('writing ncc package.json...');
   await download(
     {
       'package.json': new FileBlob({
         data: JSON.stringify({
+          license: 'UNLICENSED',
           dependencies: {
-            '@zeit/ncc': '0.9.0',
+            '@zeit/ncc': '0.15.2',
           },
         }),
       }),
     },
     nccPath,
   );
-  console.log('running npm install for ncc...');
+  console.log('installing dependencies for ncc...');
   await runNpmInstall(nccPath, ['--prefer-offline']);
 
   let blob;
@@ -211,23 +221,23 @@ exports.build = async ({ files, workPath, entrypoint }) => {
 
   if (isLegacy) {
     console.log('running npm install --production...');
-    await runNpmInstall(userPath, ['--prefer-offline', '--production']);
+    await runNpmInstall(entryPath, ['--prefer-offline', '--production']);
   }
 
   if (process.env.NPM_AUTH_TOKEN) {
-    await unlink(path.join(userPath, '.npmrc'));
+    await unlinkFile(path.join(entryPath, '.npmrc'));
   }
 
   const lambdas = {};
 
   if (isLegacy) {
-    const filesAfterBuild = await glob('**', userPath);
+    const filesAfterBuild = await glob('**', entryPath);
 
     console.log('preparing lambda files...');
     let buildId;
     try {
       buildId = await readFile(
-        path.join(userPath, '.next', 'BUILD_ID'),
+        path.join(entryPath, '.next', 'BUILD_ID'),
         'utf8',
       );
     } catch (err) {
@@ -236,10 +246,10 @@ exports.build = async ({ files, workPath, entrypoint }) => {
       );
       throw new Error('Missing BUILD_ID');
     }
-    const dotNextRootFiles = await glob('.next/*', userPath);
-    const dotNextServerRootFiles = await glob('.next/server/*', userPath);
+    const dotNextRootFiles = await glob('.next/*', entryPath);
+    const dotNextServerRootFiles = await glob('.next/server/*', entryPath);
     const nodeModules = excludeFiles(
-      await glob('node_modules/**', userPath),
+      await glob('node_modules/**', entryPath),
       file => file.startsWith('node_modules/.cache'),
     );
     const launcherFiles = {
@@ -262,7 +272,7 @@ exports.build = async ({ files, workPath, entrypoint }) => {
 
     const pages = await glob(
       '**/*.js',
-      path.join(userPath, '.next', 'server', 'static', buildId, 'pages'),
+      path.join(entryPath, '.next', 'server', 'static', buildId, 'pages'),
     );
     const launcherPath = path.join(__dirname, 'legacy-launcher.js');
     const launcherData = await readFile(launcherPath, 'utf8');
@@ -323,15 +333,35 @@ exports.build = async ({ files, workPath, entrypoint }) => {
 
     const pages = await glob(
       '**/*.js',
-      path.join(userPath, '.next', 'serverless', 'pages'),
+      path.join(entryPath, '.next', 'serverless', 'pages'),
     );
 
     const pageKeys = Object.keys(pages);
 
     if (pageKeys.length === 0) {
+      const nextConfig = await getNextConfig(userPath, entryPath);
+
+      if (nextConfig != null) {
+        console.info('Found next.config.js:');
+        console.info(nextConfig);
+        console.info();
+      }
+
       throw new Error(
         'No serverless pages were built. https://err.sh/zeit/now-builders/now-next-no-serverless-pages-built',
       );
+    }
+
+    // An optional assets folder that is placed alongside every page entrypoint
+    const assets = await glob(
+      'assets/**',
+      path.join(entryPath, '.next', 'serverless'),
+    );
+
+    const assetKeys = Object.keys(assets);
+    if (assetKeys.length > 0) {
+      console.log('detected assets to be bundled with lambda:');
+      assetKeys.forEach(assetFile => console.log(`\t${assetFile}`));
     }
 
     await Promise.all(
@@ -347,6 +377,7 @@ exports.build = async ({ files, workPath, entrypoint }) => {
         lambdas[path.join(entryDirectory, pathname)] = await createLambda({
           files: {
             ...launcherFiles,
+            ...assets,
             'page.js': pages[page],
           },
           handler: 'now__launcher.launcher',
@@ -359,7 +390,7 @@ exports.build = async ({ files, workPath, entrypoint }) => {
 
   const nextStaticFiles = await glob(
     '**',
-    path.join(userPath, '.next', 'static'),
+    path.join(entryPath, '.next', 'static'),
   );
   const staticFiles = Object.keys(nextStaticFiles).reduce(
     (mappedFiles, file) => ({
@@ -369,7 +400,9 @@ exports.build = async ({ files, workPath, entrypoint }) => {
     {},
   );
 
-  const nextStaticDirectory = onlyStaticDirectory(filesWithEntryDirectoryRoot);
+  const nextStaticDirectory = onlyStaticDirectory(
+    includeOnlyEntryDirectory(files, entryDirectory),
+  );
   const staticDirectoryFiles = Object.keys(nextStaticDirectory).reduce(
     (mappedFiles, file) => ({
       ...mappedFiles,
@@ -379,4 +412,45 @@ exports.build = async ({ files, workPath, entrypoint }) => {
   );
 
   return { ...lambdas, ...staticFiles, ...staticDirectoryFiles };
+};
+
+exports.prepareCache = async ({ cachePath, workPath, entrypoint }) => {
+  console.log('preparing cache ...');
+
+  const entryDirectory = path.dirname(entrypoint);
+  const userPath = path.join(workPath, 'user');
+  const entryPath = path.join(userPath, entryDirectory);
+  const cacheUserPath = path.join(cachePath, 'user');
+  const cacheEntryPath = path.join(cacheUserPath, entryDirectory);
+
+  const pkg = await readPackageJson(entryPath);
+  const nextVersion = getNextVersion(pkg);
+  const isLegacy = isLegacyNext(nextVersion);
+
+  if (isLegacy) {
+    // skip caching legacy mode (swapping deps between all and production can get bug-prone)
+    return {};
+  }
+
+  console.log('clearing old cache ...');
+  await removePath(cacheEntryPath);
+  await mkdirp(cacheEntryPath);
+
+  console.log('copying build files for cache ...');
+  await renamePath(entryPath, cacheEntryPath);
+
+  console.log('producing cache file manifest ...');
+
+  const cacheEntrypoint = path.relative(cacheUserPath, cacheEntryPath);
+  return {
+    ...(await glob(
+      path.join(cacheEntrypoint, 'node_modules/{**,!.*,.yarn*}'),
+      cacheUserPath,
+    )),
+    ...(await glob(
+      path.join(cacheEntrypoint, 'package-lock.json'),
+      cacheUserPath,
+    )),
+    ...(await glob(path.join(cacheEntrypoint, 'yarn.lock'), cacheUserPath)),
+  };
 };

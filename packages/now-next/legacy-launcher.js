@@ -3,16 +3,13 @@ const next = require('next-server');
 const url = require('url');
 const { Bridge } = require('./now__bridge.js');
 
-const bridge = new Bridge();
-bridge.port = 3000;
-
 process.env.NODE_ENV = 'production';
 
 const app = next({});
 
 const pathname = 'PATHNAME_PLACEHOLDER';
 
-const handle = (req, res) => {
+let handle = (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   app.render(req, res, pathname, parsedUrl.query, parsedUrl);
 };
@@ -26,15 +23,15 @@ try {
 
 if (customLauncher) {
   const launcher = customLauncher.launcher || customLauncher;
-  launcher({
-    port: bridge.port,
+  handle = launcher({
     app,
     pathname,
     handle,
   });
-} else {
-  const server = new Server(handle);
-  server.listen(bridge.port);
 }
+
+const server = new Server(handle);
+const bridge = new Bridge(server);
+bridge.listen();
 
 exports.launcher = bridge.launcher;
